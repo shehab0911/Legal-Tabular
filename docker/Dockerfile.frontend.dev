@@ -1,0 +1,16 @@
+# Development Dockerfile for Frontend with hot reload
+FROM node:18-alpine
+
+WORKDIR /app
+
+COPY frontend/package*.json ./
+
+RUN npm ci
+
+ENV VITE_API_URL=http://localhost:8000/api
+
+COPY frontend/ .
+
+EXPOSE 5173
+
+CMD ["npm", "run", "dev", "--", "--host"]
