@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Upload, Table, Eye, BarChart3, Settings, RefreshCw } from 'lucide-react';
+import { Upload, Table, Eye, BarChart3, Settings, RefreshCw, Trash2 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { projectAPI, documentAPI, extractionAPI, comparisonAPI } from '../services/api';
 import { useStore } from '../store/appStore';
@@ -51,11 +51,35 @@ export const ProjectDetailPage: React.FC = () => {
 
     setIsLoading(true);
     try {
-      for (let i = 0; i < files.length; i++) {
-        await documentAPI.uploadDocument(projectId!, files[i]);
-        toast.success(`Uploaded ${files[i].name}`);
+      const failedUploads: { name: string; reason: string }[] = [];
+      const fileArray = Array.from(files);
+      
+      // Process strictly one by one to ensure reliability and avoid database locks
+      const BATCH_SIZE = 1;
+      for (let i = 0; i < fileArray.length; i += BATCH_SIZE) {
+        const batch = fileArray.slice(i, i + BATCH_SIZE);
+        await Promise.all(
+          batch.map(async (file) => {
+            try {
+              await documentAPI.uploadDocument(projectId!, file);
+              toast.success(`Uploaded ${file.name}`);
+            } catch (error: any) {
+              const reason =
+                error?.response?.data?.detail ||
+                error?.message ||
+                'Upload failed';
+              failedUploads.push({ name: file.name, reason });
+            }
+          })
+        );
       }
+
       await loadDocuments();
+      if (failedUploads.length > 0) {
+        const names = failedUploads.map((item) => item.name).join(', ');
+        const reason = failedUploads[0].reason;
+        toast.error(`Failed to upload ${failedUploads.length} files: ${names}. Last error: ${reason}`);
+      }
     } catch (error) {
       toast.error('Failed to upload documents');
     } finally {
@@ -88,6 +112,22 @@ export const ProjectDetailPage: React.FC = () => {
     }
   };
 
+  const handleDeleteProject = async () => {
+    if (!projectId) return;
+    const confirmed = window.confirm('Are you sure you want to delete this project? This action cannot be undone.');
+    if (!confirmed) return;
+    setIsLoading(true);
+    try {
+      await projectAPI.deleteProject(projectId);
+      toast.success('Project deleted');
+      navigate('/projects');
+    } catch (error) {
+      toast.error('Failed to delete project');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   if (isLoading && !currentProject) {
     return (
       <div className="flex justify-center items-center h-screen">
@@ -113,13 +153,22 @@ export const ProjectDetailPage: React.FC = () => {
                 <span>Status: <span className="font-semibold">{currentProject.status}</span></span>
               </div>
             </div>
-            <button
-              onClick={loadProject}
-              className="flex items-center gap-2 bg-gray-200 text-gray-800 px-4 py-2 rounded-lg hover:bg-gray-300"
-            >
-              <RefreshCw size={18} />
-              Refresh
-            </button>
+            <div className="flex gap-2">
+              <button
+                onClick={loadProject}
+                className="flex items-center gap-2 bg-gray-200 text-gray-800 px-4 py-2 rounded-lg hover:bg-gray-300"
+              >
+                <RefreshCw size={18} />
+                Refresh
+              </button>
+              <button
+                onClick={handleDeleteProject}
+                className="flex items-center gap-2 bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700"
+              >
+                <Trash2 size={18} />
+                Delete Project
+              </button>
+            </div>
           </div>
         </div>
 
@@ -176,9 +225,15 @@ export const ProjectDetailPage: React.FC = () => {
                             {(doc.file_size / 1024).toFixed(2)} KB · {doc.file_type}
                           </p>
                         </div>
-                        <span className={`px-3 py-1 rounded-full text-xs font-medium ${
-                          doc.status === 'INDEXED' ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800'
-                        }`}>
+                        <span
+                          className={`px-3 py-1 rounded-full text-xs font-medium ${
+                            doc.status === 'INDEXED'
+                              ? 'bg-green-100 text-green-800'
+                              : doc.status === 'ERROR'
+                                ? 'bg-red-100 text-red-800'
+                                : 'bg-yellow-100 text-yellow-800'
+                          }`}
+                        >
                           {doc.status}
                         </span>
                       </div>

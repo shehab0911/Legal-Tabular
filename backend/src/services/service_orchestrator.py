@@ -38,6 +38,10 @@ class ProjectService:
             'description': project.description,
             'status': project.status.value,
             'created_at': project.created_at.isoformat(),
+            'updated_at': project.updated_at.isoformat(),
+            'document_count': 0,
+            'extraction_count': 0,
+            'field_template_id': project.field_template_id,
         }
 
     def get_project_info(self, project_id: str) -> Dict[str, Any]:
@@ -80,13 +84,20 @@ class ProjectService:
         project = self.repo.update_project(project_id, **update_data)
         if not project:
             return None
+        
+        documents = self.repo.list_project_documents(project_id)
+        extractions = self.repo.list_extractions_by_project(project_id)
 
         return {
             'id': project.id,
             'name': project.name,
             'description': project.description,
             'status': project.status.value,
+            'created_at': project.created_at.isoformat(),
             'updated_at': project.updated_at.isoformat(),
+            'document_count': len(documents),
+            'extraction_count': len(extractions),
+            'field_template_id': project.field_template_id,
         }
 
     def list_projects(self, skip: int = 0, limit: int = 100) -> List[Dict[str, Any]]:
@@ -120,6 +131,8 @@ class DocumentService:
     ) -> Dict[str, Any]:
         """Ingest and parse document."""
         try:
+            logger.info(f"Starting ingestion for {filename} in project {project_id}")
+            
             # Validate file format
             if not self.parser.is_supported(filename):
                 raise ValueError(f"Unsupported file format: {filename}")
@@ -129,7 +142,39 @@ class DocumentService:
             file_type = ext.lower()
 
             # Parse document
-            content, metadata = self.parser.parse(file_path, file_type)
+            try:
+                content, metadata = self.parser.parse(file_path, file_type)
+            except Exception as parse_error:
+                logger.error(f"Error parsing document {filename}: {str(parse_error)}")
+                # Create document with ERROR status
+                import os
+                file_size = os.path.getsize(file_path)
+                try:
+                    document = self.repo.create_document(
+                        project_id=project_id,
+                        filename=filename,
+                        file_type=file_type,
+                        file_path=file_path,
+                        file_size=file_size,
+                        content_text="",
+                        parsed_metadata={"error": str(parse_error)},
+                    )
+                    self.repo.update_document_status(document.id, DocumentStatus.ERROR)
+                    return {
+                        'id': document.id,
+                        'project_id': document.project_id,
+                        'filename': document.filename,
+                        'file_type': document.file_type,
+                        'file_size': document.file_size,
+                        'status': DocumentStatus.ERROR.value,
+                        'chunk_count': 0,
+                        'created_at': document.created_at.isoformat(),
+                        'updated_at': document.updated_at.isoformat(),
+                        'error': str(parse_error)
+                    }
+                except Exception as db_error:
+                    logger.error(f"DB error while saving failed doc {filename}: {str(db_error)}")
+                    raise db_error
 
             # Get file size
             import os
@@ -148,30 +193,41 @@ class DocumentService:
 
             # Create chunks
             chunks_data = self.chunker.chunk(content, metadata)
+            
+            # Prepare chunks for bulk insert
+            bulk_chunks = []
             for i, chunk_data in enumerate(chunks_data):
-                self.repo.create_chunk(
-                    document_id=document.id,
-                    chunk_index=i,
-                    text=chunk_data['text'],
-                    page_number=chunk_data.get('page_number'),
-                    section_title=chunk_data.get('section'),
-                )
+                bulk_chunks.append({
+                    'document_id': document.id,
+                    'chunk_index': i,
+                    'text': chunk_data['text'],
+                    'page_number': chunk_data.get('page_number'),
+                    'section_title': chunk_data.get('section'),
+                })
+            
+            # Bulk create chunks
+            if bulk_chunks:
+                self.repo.create_chunks_bulk(bulk_chunks)
 
             # Update document status
             self.repo.update_document_status(document.id, DocumentStatus.INDEXED)
 
+            logger.info(f"Successfully ingested {filename}")
             return {
                 'id': document.id,
                 'project_id': document.project_id,
                 'filename': document.filename,
                 'file_type': document.file_type,
+                'file_size': document.file_size,
                 'status': DocumentStatus.INDEXED.value,
                 'chunk_count': len(chunks_data),
                 'created_at': document.created_at.isoformat(),
+                'updated_at': document.updated_at.isoformat(),
             }
 
         except Exception as e:
-            logger.error(f"Error ingesting document: {str(e)}")
+            logger.error(f"Critical error ingesting document {filename}: {str(e)}")
+            # Attempt to record failure if possible, but re-raise to notify caller
             raise
 
     def list_project_documents(self, project_id: str) -> List[Dict[str, Any]]:
@@ -240,7 +296,7 @@ class ExtractionService:
                     raw_text=result.get('raw_text'),
                     normalized_value=result.get('normalized_value'),
                     confidence_score=result.get('confidence_score', 0.0),
-                    metadata=result.get('extraction_metadata', {}),
+                    extra_metadata=result.get('extraction_metadata', {}),
                 )
 
                 # Store citations
@@ -412,14 +468,22 @@ class ComparisonService:
             # Group extractions by field
             field_groups = {}
             for extraction in extractions:
-                field_name = extraction.field_name
+                # Convert field name to Title Case for display (e.g. "audit_policy" -> "Audit Policy")
+                raw_field_name = extraction.field_name
+                # If the field name has underscores, replace them with spaces. 
+                # Then convert to Title Case.
+                if raw_field_name:
+                    field_name = raw_field_name.replace('_', ' ').title()
+                else:
+                    field_name = "Unknown Field"
+                
                 if field_name not in field_groups:
                     field_groups[field_name] = {
                         'field_name': field_name,
                         'field_type': extraction.field_type,
                         'results': {},
                     }
-                
+                    
                 doc_id = extraction.document_id
                 field_groups[field_name]['results'][doc_id] = {
                     'id': extraction.id,
@@ -520,6 +584,49 @@ class EvaluationService:
 
         except Exception as e:
             logger.error(f"Error evaluating extraction: {str(e)}")
+            raise
+
+    def evaluate_project_reviews(self, project_id: str) -> Dict[str, Any]:
+        """Evaluate all reviewed extractions in the project."""
+        try:
+            reviews = self.repo.list_reviews_by_project(project_id)
+            extractions = self.repo.list_extractions_by_project(project_id)
+            
+            # Map extractions by ID
+            extraction_map = {e.id: e for e in extractions}
+            
+            count = 0
+            for review in reviews:
+                if review.status == ExtractionStatus.PENDING:
+                    continue
+                
+                extraction = extraction_map.get(review.extraction_id)
+                if not extraction:
+                    continue
+                
+                human_value = None
+                if review.status == ExtractionStatus.CONFIRMED:
+                    # If confirmed, the human agrees with the AI (or the current value)
+                    # Use extraction.normalized_value or extraction.extracted_value
+                    human_value = extraction.normalized_value or extraction.extracted_value
+                elif review.status == ExtractionStatus.MANUAL_UPDATED:
+                    human_value = review.manual_value
+                else:
+                    # Skip REJECTED or others for now unless we have a clear human value
+                    continue
+                
+                self.evaluate_extraction(
+                    project_id=project_id,
+                    document_id=extraction.document_id,
+                    field_name=extraction.field_name,
+                    human_value=human_value
+                )
+                count += 1
+                
+            return self.generate_evaluation_report(project_id)
+            
+        except Exception as e:
+            logger.error(f"Error evaluating project reviews: {str(e)}")
             raise
 
     @staticmethod

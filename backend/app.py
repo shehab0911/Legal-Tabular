@@ -7,8 +7,13 @@ import logging
 from typing import Optional, List, Dict, Any
 import os
 from datetime import datetime
+import aiofiles
+import asyncio
+from dotenv import load_dotenv
 
 from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks
+from fastapi.responses import JSONResponse
+from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -17,6 +22,7 @@ from src.models.schema import (
     DocumentUploadRequest, DocumentResponse, ComparisonTableResponse,
     ExtractionUpdateRequest, TaskStatusResponse, EvaluationMetrics,
     EvaluationReportResponse, FieldTemplateCreate, FieldTemplateResponse,
+    FieldType,
 )
 from src.storage.repository import DatabaseRepository
 from src.services.service_orchestrator import (
@@ -27,6 +33,9 @@ from src.services.service_orchestrator import (
 # Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Load environment variables
+load_dotenv()
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -55,6 +64,9 @@ review_service = ReviewService(repo)
 comparison_service = ComparisonService(repo)
 evaluation_service = EvaluationService(repo)
 task_service = TaskService(repo)
+
+# Global lock for document ingestion to prevent SQLite concurrency issues
+ingest_lock = asyncio.Lock()
 
 
 # ==================== HEALTH CHECK ====================
@@ -129,6 +141,23 @@ async def update_project(project_id: str, request: ProjectUpdateRequest):
         logger.error(f"Error updating project: {str(e)}")
         raise HTTPException(status_code=400, detail=str(e))
 
+@app.delete("/projects/{project_id}")
+async def delete_project(project_id: str):
+    """Delete project and all related data."""
+    logger.info(f"Deleting project {project_id}")
+    try:
+        deleted = repo.delete_project(project_id)
+        if not deleted:
+            logger.warning(f"Project {project_id} not found for deletion")
+            raise HTTPException(status_code=404, detail="Project not found")
+        logger.info(f"Successfully deleted project {project_id}")
+        return {"status": "deleted", "project_id": project_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting project: {str(e)}")
+        raise HTTPException(status_code=400, detail=str(e))
+
 
 # ==================== DOCUMENT ENDPOINTS ====================
 
@@ -139,21 +168,52 @@ async def upload_document(
 ):
     """Upload document to project."""
     try:
-        # Save file temporarily
-        file_path = f"/tmp/{file.filename}"
-        with open(file_path, "wb") as f:
-            f.write(await file.read())
+        # Save file to uploads directory
+        upload_dir = os.path.join(os.path.dirname(__file__), "uploads")
+        os.makedirs(upload_dir, exist_ok=True)
+        
+        # Sanitize filename
+        safe_filename = os.path.basename(file.filename)
+        file_path = os.path.join(upload_dir, safe_filename)
+        
+        # Handle duplicate filenames by appending timestamp
+        if os.path.exists(file_path):
+            name, ext = os.path.splitext(safe_filename)
+            timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+            file_path = os.path.join(upload_dir, f"{name}_{timestamp}{ext}")
+            
+        # Stream file to disk in chunks to avoid memory spikes
+        CHUNK_SIZE = 1024 * 1024
+        async with aiofiles.open(file_path, "wb") as f:
+            while True:
+                chunk = await file.read(CHUNK_SIZE)
+                if not chunk:
+                    break
+                await f.write(chunk)
 
         # Ingest document
-        document = document_service.ingest_document(
-            project_id=project_id,
-            filename=file.filename,
-            file_path=file_path,
-        )
-        return document
+        # NOTE: Removed ingest_lock to allow parallel ingestion. 
+        # DatabaseRepository now handles concurrency with retry_on_lock.
+        logger.info(f"Invoking ingest_document for {file.filename} (Size: {os.path.getsize(file_path)} bytes)")
+        
+        start_time = datetime.now()
+        try:
+            document = await run_in_threadpool(
+                document_service.ingest_document,
+                project_id=project_id,
+                filename=file.filename,
+                file_path=file_path,
+            )
+            duration = (datetime.now() - start_time).total_seconds()
+            logger.info(f"Ingestion successful for {file.filename} (Duration: {duration:.2f}s), Document ID: {document.get('id')}")
+            return document
+        except Exception as e:
+            duration = (datetime.now() - start_time).total_seconds()
+            logger.error(f"Ingestion failed for {file.filename} (Duration: {duration:.2f}s): {str(e)}")
+            raise
     except Exception as e:
-        logger.error(f"Error uploading document: {str(e)}")
-        raise HTTPException(status_code=400, detail=str(e))
+        logger.exception(f"Error uploading document {file.filename}: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Upload failed for {file.filename}: {str(e)}")
 
 
 @app.get("/projects/{project_id}/documents")
@@ -222,10 +282,14 @@ async def list_field_templates():
 
 # ==================== EXTRACTION ENDPOINTS ====================
 
+class ExtractFieldsRequest(BaseModel):
+    document_id: Optional[str] = None
+
+
 @app.post("/projects/{project_id}/extract")
 async def extract_fields(
     project_id: str,
-    document_id: Optional[str] = None,
+    request: Optional[ExtractFieldsRequest] = None,
     background_tasks: BackgroundTasks = None,
 ):
     """Extract fields from documents."""
@@ -236,11 +300,242 @@ async def extract_fields(
             raise HTTPException(status_code=404, detail="Project not found")
 
         if not project.field_template_id:
-            raise HTTPException(status_code=400, detail="Project has no field template")
-
-        template = repo.get_field_template(project.field_template_id)
-        if not template:
-            raise HTTPException(status_code=404, detail="Field template not found")
+            default_fields = [
+                {
+                    "name": "effective_date",
+                    "display_name": "Effective Date",
+                    "field_type": FieldType.DATE.value,
+                    "description": "The effective date of the agreement",
+                    "required": False,
+                },
+                {
+                    "name": "parties",
+                    "display_name": "Parties",
+                    "field_type": FieldType.TEXT.value,
+                    "description": "The parties involved in the agreement",
+                    "required": False,
+                },
+                {
+                    "name": "term",
+                    "display_name": "Term",
+                    "field_type": FieldType.TEXT.value,
+                    "description": "The term or duration of the agreement",
+                    "required": False,
+                },
+                {
+                    "name": "governing_law",
+                    "display_name": "Governing Law",
+                    "field_type": FieldType.TEXT.value,
+                    "description": "The governing law jurisdiction",
+                    "required": False,
+                },
+                {
+                    "name": "amount",
+                    "display_name": "Amount",
+                    "field_type": FieldType.CURRENCY.value,
+                    "description": "The monetary amount referenced in the agreement",
+                    "required": False,
+                },
+                {
+                    "name": "payment_terms",
+                    "display_name": "Payment Terms",
+                    "field_type": FieldType.TEXT.value,
+                    "description": "Payment terms or pricing schedule",
+                    "required": False,
+                },
+                {
+                    "name": "confidentiality",
+                    "display_name": "Confidentiality",
+                    "field_type": FieldType.TEXT.value,
+                    "description": "Confidentiality obligations",
+                    "required": False,
+                },
+                {
+                    "name": "termination",
+                    "display_name": "Termination",
+                    "field_type": FieldType.TEXT.value,
+                    "description": "Termination or cancellation terms",
+                    "required": False,
+                },
+                {
+                    "name": "indemnification",
+                    "display_name": "Indemnification",
+                    "field_type": FieldType.TEXT.value,
+                    "description": "Indemnification obligations",
+                    "required": False,
+                },
+                {
+                    "name": "notice",
+                    "display_name": "Notice",
+                    "field_type": FieldType.TEXT.value,
+                    "description": "Notice requirements",
+                    "required": False,
+                },
+                {
+                    "name": "jurisdiction",
+                    "display_name": "Jurisdiction / Venue",
+                    "field_type": FieldType.TEXT.value,
+                    "description": "Jurisdiction and venue for disputes",
+                    "required": False,
+                },
+                {
+                    "name": "assignment",
+                    "display_name": "Assignment",
+                    "field_type": FieldType.TEXT.value,
+                    "description": "Assignment and transferability terms",
+                    "required": False,
+                },
+                {
+                    "name": "force_majeure",
+                    "display_name": "Force Majeure",
+                    "field_type": FieldType.TEXT.value,
+                    "description": "Force majeure clause",
+                    "required": False,
+                },
+                {
+                    "name": "dispute_resolution",
+                    "display_name": "Dispute Resolution",
+                    "field_type": FieldType.TEXT.value,
+                    "description": "Arbitration/mediation or dispute resolution terms",
+                    "required": False,
+                },
+                {
+                    "name": "warranties",
+                    "display_name": "Warranties",
+                    "field_type": FieldType.TEXT.value,
+                    "description": "Representations and warranties",
+                    "required": False,
+                },
+                {
+                    "name": "exclusivity",
+                    "display_name": "Exclusivity",
+                    "field_type": FieldType.TEXT.value,
+                    "description": "Exclusivity obligations",
+                    "required": False,
+                },
+                {
+                    "name": "change_of_control",
+                    "display_name": "Change of Control",
+                    "field_type": FieldType.TEXT.value,
+                    "description": "Change of control provisions",
+                    "required": False,
+                },
+                {
+                    "name": "amendment",
+                    "display_name": "Amendment",
+                    "field_type": FieldType.TEXT.value,
+                    "description": "Amendment/modification terms",
+                    "required": False,
+                },
+                {
+                    "name": "severability",
+                    "display_name": "Severability",
+                    "field_type": FieldType.TEXT.value,
+                    "description": "Severability clause",
+                    "required": False,
+                },
+                {
+                    "name": "waiver",
+                    "display_name": "Waiver",
+                    "field_type": FieldType.TEXT.value,
+                    "description": "Waiver clause",
+                    "required": False,
+                },
+                {
+                    "name": "survival",
+                    "display_name": "Survival",
+                    "field_type": FieldType.TEXT.value,
+                    "description": "Survival of obligations",
+                    "required": False,
+                },
+                {
+                    "name": "entire_agreement",
+                    "display_name": "Entire Agreement",
+                    "field_type": FieldType.TEXT.value,
+                    "description": "Entire agreement clause",
+                    "required": False,
+                },
+                {
+                    "name": "counterparts",
+                    "display_name": "Counterparts",
+                    "field_type": FieldType.TEXT.value,
+                    "description": "Counterparts clause",
+                    "required": False,
+                },
+                {
+                    "name": "audit_rights",
+                    "display_name": "Audit Rights",
+                    "field_type": FieldType.TEXT.value,
+                    "description": "Right to audit records",
+                    "required": False,
+                },
+                {
+                    "name": "insurance",
+                    "display_name": "Insurance",
+                    "field_type": FieldType.TEXT.value,
+                    "description": "Insurance requirements",
+                    "required": False,
+                },
+                {
+                    "name": "liability_cap",
+                    "display_name": "Liability Cap",
+                    "field_type": FieldType.CURRENCY.value,
+                    "description": "Limitation of liability amount",
+                    "required": False,
+                },
+                {
+                    "name": "data_privacy",
+                    "display_name": "Data Privacy",
+                    "field_type": FieldType.TEXT.value,
+                    "description": "Data protection and privacy terms",
+                    "required": False,
+                },
+                {
+                    "name": "non_solicitation",
+                    "display_name": "Non-Solicitation",
+                    "field_type": FieldType.TEXT.value,
+                    "description": "Non-solicitation of employees/customers",
+                    "required": False,
+                },
+                {
+                    "name": "non_compete",
+                    "display_name": "Non-Compete",
+                    "field_type": FieldType.TEXT.value,
+                    "description": "Non-competition restrictions",
+                    "required": False,
+                },
+                {
+                    "name": "subcontracting",
+                    "display_name": "Subcontracting",
+                    "field_type": FieldType.TEXT.value,
+                    "description": "Rights to subcontract",
+                    "required": False,
+                },
+                {
+                    "name": "intellectual_property",
+                    "display_name": "Intellectual Property",
+                    "field_type": FieldType.TEXT.value,
+                    "description": "IP ownership and licensing",
+                    "required": False,
+                },
+                {
+                    "name": "publicity",
+                    "display_name": "Publicity",
+                    "field_type": FieldType.TEXT.value,
+                    "description": "Publicity and press release terms",
+                    "required": False,
+                },
+            ]
+            template = repo.create_field_template(
+                name="Default Template",
+                description="Auto-created template",
+                fields=default_fields,
+            )
+            project = repo.update_project(project_id, field_template_id=template.id)
+        else:
+            template = repo.get_field_template(project.field_template_id)
+            if not template:
+                raise HTTPException(status_code=404, detail="Field template not found")
 
         field_definitions = template.fields
 
@@ -252,7 +547,7 @@ async def extract_fields(
             background_tasks.add_task(
                 _run_extraction,
                 project_id,
-                document_id,
+                request.document_id if request else None,
                 field_definitions,
                 task['task_id'],
             )
@@ -431,15 +726,20 @@ def _run_evaluation(
     try:
         task_service.repo.update_task(task_id, status='PROCESSING')
 
-        for item in evaluation_data.get('items', []):
-            evaluation_service.evaluate_extraction(
-                project_id=project_id,
-                document_id=item.get('document_id'),
-                field_name=item.get('field_name'),
-                human_value=item.get('human_value'),
-            )
+        items = evaluation_data.get('items', [])
+        if items:
+            for item in items:
+                evaluation_service.evaluate_extraction(
+                    project_id=project_id,
+                    document_id=item.get('document_id'),
+                    field_name=item.get('field_name'),
+                    human_value=item.get('human_value'),
+                )
+            report = evaluation_service.generate_evaluation_report(project_id)
+        else:
+            # If no items provided, evaluate against all reviewed extractions
+            report = evaluation_service.evaluate_project_reviews(project_id)
 
-        report = evaluation_service.generate_evaluation_report(project_id)
         task_service.repo.update_task(
             task_id,
             status='COMPLETED',
@@ -488,10 +788,13 @@ async def get_task_status(task_id: str):
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request, exc):
     """Handle HTTP exceptions."""
-    return {
-        "error": exc.detail,
-        "status_code": exc.status_code,
-    }
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "error": exc.detail,
+            "status_code": exc.status_code,
+        }
+    )
 
 
 if __name__ == "__main__":

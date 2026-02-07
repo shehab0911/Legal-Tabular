@@ -90,8 +90,12 @@ class DocumentParser:
                 # Extract text from each page
                 for page_num, page in enumerate(pdf_reader.pages, 1):
                     text = page.extract_text()
-                    if text:
+                    if text and text.strip():
                         content_parts.append(f"\n--- Page {page_num} ---\n{text}")
+                
+                if not content_parts:
+                    logger.warning(f"No text extracted from PDF {file_path}. It might be scanned.")
+                    content_parts.append("[SYSTEM WARNING: No text could be extracted from this document. It may be a scanned PDF or image-based. Text extraction requires searchable text.]")
                 
                 # Extract document info
                 if pdf_reader.metadata:

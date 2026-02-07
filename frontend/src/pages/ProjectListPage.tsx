@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { Plus, Folder, Calendar, FileText } from "lucide-react";
+import { Plus, Folder, Calendar, FileText, Trash2, Edit } from "lucide-react";
 import toast from "react-hot-toast";
 import { projectAPI } from "../services/api";
 import { useStore } from "../store/appStore";
@@ -8,6 +8,7 @@ import { useStore } from "../store/appStore";
 export const ProjectListPage: React.FC = () => {
   const { projects, setProjects, isLoading, setIsLoading } = useStore();
   const [showCreateForm, setShowCreateForm] = useState(false);
+  const [editingProject, setEditingProject] = useState<any>(null);
   const [formData, setFormData] = useState({ name: "", description: "" });
 
   useEffect(() => {
@@ -26,17 +27,53 @@ export const ProjectListPage: React.FC = () => {
     }
   };
 
-  const handleCreateProject = async (e: React.FormEvent) => {
+  const handleSubmitProject = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      await projectAPI.createProject(formData.name, formData.description);
-      toast.success("Project created successfully");
-      setFormData({ name: "", description: "" });
-      setShowCreateForm(false);
+      if (editingProject) {
+        await projectAPI.updateProject(
+          editingProject.id,
+          formData.name,
+          formData.description
+        );
+        toast.success("Project updated successfully");
+      } else {
+        await projectAPI.createProject(formData.name, formData.description);
+        toast.success("Project created successfully");
+      }
+      resetForm();
       loadProjects();
     } catch (error) {
-      toast.error("Failed to create project");
+      toast.error(editingProject ? "Failed to update project" : "Failed to create project");
     }
+  };
+
+  const handleDeleteProject = async (e: React.MouseEvent, projectId: string) => {
+    e.preventDefault(); // Prevent navigation
+    e.stopPropagation(); // Stop event bubbling
+    if (!window.confirm("Are you sure you want to delete this project?")) return;
+    
+    try {
+      await projectAPI.deleteProject(projectId);
+      toast.success("Project deleted");
+      loadProjects();
+    } catch (error) {
+      toast.error("Failed to delete project");
+    }
+  };
+
+  const handleEditClick = (e: React.MouseEvent, project: any) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setEditingProject(project);
+    setFormData({ name: project.name, description: project.description || "" });
+    setShowCreateForm(true);
+  };
+
+  const resetForm = () => {
+    setFormData({ name: "", description: "" });
+    setEditingProject(null);
+    setShowCreateForm(false);
   };
 
   return (
@@ -50,7 +87,10 @@ export const ProjectListPage: React.FC = () => {
             </p>
           </div>
           <button
-            onClick={() => setShowCreateForm(!showCreateForm)}
+            onClick={() => {
+              resetForm();
+              setShowCreateForm(!showCreateForm);
+            }}
             className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700"
           >
             <Plus size={20} />
@@ -60,8 +100,10 @@ export const ProjectListPage: React.FC = () => {
 
         {showCreateForm && (
           <div className="bg-white rounded-lg shadow-md p-6 mb-8">
-            <h2 className="text-xl font-semibold mb-4">Create New Project</h2>
-            <form onSubmit={handleCreateProject} className="space-y-4">
+            <h2 className="text-xl font-semibold mb-4">
+              {editingProject ? "Edit Project" : "Create New Project"}
+            </h2>
+            <form onSubmit={handleSubmitProject} className="space-y-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700">
                   Project Name
@@ -96,11 +138,11 @@ export const ProjectListPage: React.FC = () => {
                   type="submit"
                   className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700"
                 >
-                  Create Project
+                  {editingProject ? "Update Project" : "Create Project"}
                 </button>
                 <button
                   type="button"
-                  onClick={() => setShowCreateForm(false)}
+                  onClick={resetForm}
                   className="bg-gray-200 text-gray-800 px-4 py-2 rounded-lg hover:bg-gray-300"
                 >
                   Cancel
@@ -124,43 +166,63 @@ export const ProjectListPage: React.FC = () => {
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
             {projects.map((project) => (
-              <Link
+              <div
                 key={project.id}
-                to={`/projects/${project.id}`}
-                className="bg-white rounded-lg shadow-md p-6 hover:shadow-lg transition-shadow cursor-pointer"
+                className="bg-white rounded-lg shadow-md hover:shadow-lg transition-shadow flex flex-col justify-between"
               >
-                <h3 className="text-lg font-semibold text-gray-900 mb-2">
-                  {project.name}
-                </h3>
-                <p className="text-gray-600 text-sm mb-4">
-                  {project.description || "No description"}
-                </p>
-                <div className="space-y-2 text-sm text-gray-600">
-                  <div className="flex items-center gap-2">
-                    <FileText size={16} />
-                    <span>{project.document_count} documents</span>
+                <Link
+                  to={`/projects/${project.id}`}
+                  className="block p-6 cursor-pointer flex-grow"
+                >
+                  <h3 className="text-lg font-semibold text-gray-900 mb-2">
+                    {project.name}
+                  </h3>
+                  <p className="text-gray-600 text-sm mb-4">
+                    {project.description || "No description"}
+                  </p>
+                  <div className="space-y-2 text-sm text-gray-600">
+                    <div className="flex items-center gap-2">
+                      <FileText size={16} />
+                      <span>{project.document_count} documents</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Calendar size={16} />
+                      <span>
+                        {new Date(project.created_at).toLocaleDateString()}
+                      </span>
+                    </div>
                   </div>
-                  <div className="flex items-center gap-2">
-                    <Calendar size={16} />
-                    <span>
-                      {new Date(project.created_at).toLocaleDateString()}
+                  <div className="mt-4">
+                    <span
+                      className={`inline-block px-3 py-1 rounded-full text-xs font-medium ${
+                        project.status === "COMPLETED"
+                          ? "bg-green-100 text-green-800"
+                          : project.status === "READY"
+                            ? "bg-blue-100 text-blue-800"
+                            : "bg-yellow-100 text-yellow-800"
+                      }`}
+                    >
+                      {project.status}
                     </span>
                   </div>
-                </div>
-                <div className="mt-4">
-                  <span
-                    className={`inline-block px-3 py-1 rounded-full text-xs font-medium ${
-                      project.status === "COMPLETED"
-                        ? "bg-green-100 text-green-800"
-                        : project.status === "READY"
-                          ? "bg-blue-100 text-blue-800"
-                          : "bg-yellow-100 text-yellow-800"
-                    }`}
+                </Link>
+                <div className="px-6 py-3 border-t border-gray-100 flex justify-between gap-3 bg-gray-50 rounded-b-lg">
+                  <button
+                    onClick={(e) => handleEditClick(e, project)}
+                    className="flex items-center gap-1 text-sm font-medium text-blue-600 hover:text-blue-800 transition-colors"
+                    title="Edit Project"
                   >
-                    {project.status}
-                  </span>
+                    <Edit size={16} /> Edit
+                  </button>
+                  <button
+                    onClick={(e) => handleDeleteProject(e, project.id)}
+                    className="flex items-center gap-1 text-sm font-medium text-red-600 hover:text-red-800 transition-colors"
+                    title="Delete Project"
+                  >
+                    <Trash2 size={16} /> Delete
+                  </button>
                 </div>
-              </Link>
+              </div>
             ))}
           </div>
         )}

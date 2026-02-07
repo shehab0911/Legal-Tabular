@@ -82,13 +82,15 @@ class Project(Base):
     status = Column(SQLEnum(ProjectStatus), default=ProjectStatus.CREATED, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
-    metadata = Column(JSON, default={}, nullable=False)
+    extra_metadata = Column("metadata", JSON, default={}, nullable=False)
 
     # Relationships
     documents = relationship("Document", back_populates="project", cascade="all, delete-orphan")
     field_template = relationship("FieldTemplate", back_populates="projects")
     extractions = relationship("ExtractionResult", back_populates="project", cascade="all, delete-orphan")
     review_states = relationship("ReviewState", back_populates="project", cascade="all, delete-orphan")
+    evaluations = relationship("EvaluationResult", back_populates="project", cascade="all, delete-orphan")
+    tasks = relationship("Task", back_populates="project", cascade="all, delete-orphan")
 
 
 class Document(Base):
@@ -111,6 +113,7 @@ class Document(Base):
     project = relationship("Project", back_populates="documents")
     chunks = relationship("DocumentChunk", back_populates="document", cascade="all, delete-orphan")
     citations = relationship("Citation", back_populates="document", cascade="all, delete-orphan")
+    extractions = relationship("ExtractionResult", back_populates="document", cascade="all, delete-orphan")
 
 
 class DocumentChunk(Base):
@@ -124,7 +127,7 @@ class DocumentChunk(Base):
     page_number = Column(Integer, nullable=True)
     section_title = Column(String(512), nullable=True)
     embedding = Column(JSON, nullable=True)  # Vector embedding for similarity search
-    metadata = Column(JSON, default={}, nullable=False)
+    extra_metadata = Column("metadata", JSON, default={}, nullable=False)
 
     # Relationships
     document = relationship("Document", back_populates="chunks")
@@ -163,13 +166,13 @@ class ExtractionResult(Base):
     status = Column(SQLEnum(ExtractionStatus), default=ExtractionStatus.PENDING, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
-    metadata = Column(JSON, default={}, nullable=False)
+    extra_metadata = Column("metadata", JSON, default={}, nullable=False)
 
     # Relationships
     project = relationship("Project", back_populates="extractions")
-    document = relationship("Document")
-    citations = relationship("Citation", back_populates="extraction")
-    review_state = relationship("ReviewState", back_populates="extraction", uselist=False)
+    document = relationship("Document", back_populates="extractions")
+    citations = relationship("Citation", back_populates="extraction", cascade="all, delete-orphan")
+    review_state = relationship("ReviewState", back_populates="extraction", uselist=False, cascade="all, delete-orphan")
 
 
 class Citation(Base):
@@ -240,6 +243,9 @@ class Task(Base):
     started_at = Column(DateTime, nullable=True)
     completed_at = Column(DateTime, nullable=True)
 
+    # Relationships
+    project = relationship("Project", back_populates="tasks")
+
 
 class EvaluationResult(Base):
     """Stores evaluation metrics comparing AI vs. human extraction."""
@@ -255,6 +261,10 @@ class EvaluationResult(Base):
     normalized_match = Column(Boolean, default=False, nullable=False)
     notes = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    # Relationships
+    project = relationship("Project", back_populates="evaluations")
+    document = relationship("Document")
 
 
 # ==================== PYDANTIC MODELS (API SCHEMAS) ====================

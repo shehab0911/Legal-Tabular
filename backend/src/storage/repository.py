@@ -2,10 +2,13 @@
 Database repository layer for all database operations.
 """
 
-from sqlalchemy import create_engine, and_
+from sqlalchemy import create_engine, and_, text
 from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy.exc import OperationalError
 from typing import List, Optional, Dict, Any
 import logging
+import time
+import functools
 
 from src.models.schema import (
     Base, Project, Document, DocumentChunk, FieldTemplate, ExtractionResult,
@@ -15,13 +18,49 @@ from src.models.schema import (
 
 logger = logging.getLogger(__name__)
 
+def retry_on_lock(max_retries=5, delay=1.0):
+    """Decorator to retry database operations on lock error."""
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            retries = 0
+            while True:
+                try:
+                    return func(*args, **kwargs)
+                except OperationalError as e:
+                    if "database is locked" in str(e) and retries < max_retries:
+                        retries += 1
+                        sleep_time = delay * retries
+                        logger.warning(f"Database locked in {func.__name__}, retrying in {sleep_time}s ({retries}/{max_retries})")
+                        time.sleep(sleep_time)
+                        continue
+                    raise
+        return wrapper
+    return decorator
+
 
 class DatabaseRepository:
     """Repository pattern for all database operations."""
 
     def __init__(self, database_url: str):
         """Initialize database connection."""
-        self.engine = create_engine(database_url, echo=False)
+        if "sqlite" in database_url:
+            # Optimize SQLite for concurrency
+            self.engine = create_engine(
+                database_url, 
+                echo=False,
+                connect_args={'check_same_thread': False, 'timeout': 60}  # Increased timeout
+            )
+            # Enable WAL mode
+            try:
+                with self.engine.connect() as connection:
+                    connection.execute(text("PRAGMA journal_mode=WAL;"))
+                    connection.execute(text("PRAGMA synchronous=NORMAL;"))
+            except Exception as e:
+                logger.warning(f"Could not set SQLite PRAGMA: {e}")
+        else:
+            self.engine = create_engine(database_url, echo=False)
+
         self.SessionLocal = sessionmaker(bind=self.engine)
         
         # Create tables
@@ -90,21 +129,34 @@ class DatabaseRepository:
         finally:
             session.close()
 
+    @retry_on_lock()
     def delete_project(self, project_id: str) -> bool:
         """Delete project and related data."""
         session = self.get_session()
         try:
+            # Enable foreign key support for this session to ensure cascades work if supported
+            if "sqlite" in str(self.engine.url):
+                session.execute(text("PRAGMA foreign_keys=ON"))
+
             project = session.query(Project).filter(Project.id == project_id).first()
             if project:
+                # Manually delete related tasks to avoid FK constraint issues if cascade fails
+                session.query(Task).filter(Task.project_id == project_id).delete(synchronize_session=False)
+                
                 session.delete(project)
                 session.commit()
                 return True
             return False
+        except Exception as e:
+            logger.error(f"Error deleting project {project_id}: {str(e)}")
+            session.rollback()
+            raise
         finally:
             session.close()
 
     # ==================== DOCUMENT OPERATIONS ====================
 
+    @retry_on_lock()
     def create_document(
         self,
         project_id: str,
@@ -173,7 +225,7 @@ class DatabaseRepository:
         text: str,
         page_number: Optional[int] = None,
         section_title: Optional[str] = None,
-        metadata: Dict[str, Any] = None,
+        extra_metadata: Dict[str, Any] = None,
     ) -> DocumentChunk:
         """Create document chunk."""
         session = self.get_session()
@@ -184,7 +236,7 @@ class DatabaseRepository:
                 text=text,
                 page_number=page_number,
                 section_title=section_title,
-                metadata=metadata or {},
+                extra_metadata=extra_metadata or {},
             )
             session.add(chunk)
             session.commit()
@@ -200,6 +252,31 @@ class DatabaseRepository:
             return session.query(DocumentChunk).filter(
                 DocumentChunk.document_id == document_id
             ).order_by(DocumentChunk.chunk_index).all()
+        finally:
+            session.close()
+
+    @retry_on_lock()
+    def create_chunks_bulk(self, chunks_data: List[Dict[str, Any]]) -> bool:
+        """Create multiple chunks in bulk."""
+        session = self.get_session()
+        try:
+            chunks = [
+                DocumentChunk(
+                    document_id=chunk['document_id'],
+                    chunk_index=chunk['chunk_index'],
+                    text=chunk['text'],
+                    page_number=chunk.get('page_number'),
+                    section_title=chunk.get('section_title'),
+                )
+                for chunk in chunks_data
+            ]
+            session.bulk_save_objects(chunks)
+            session.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Error bulk creating chunks: {str(e)}")
+            session.rollback()
+            raise
         finally:
             session.close()
 
@@ -281,7 +358,7 @@ class DatabaseRepository:
         raw_text: Optional[str] = None,
         normalized_value: Optional[str] = None,
         confidence_score: float = 0.0,
-        metadata: Dict[str, Any] = None,
+        extra_metadata: Dict[str, Any] = None,
     ) -> ExtractionResult:
         """Create extraction result."""
         session = self.get_session()
@@ -296,7 +373,7 @@ class DatabaseRepository:
                 normalized_value=normalized_value,
                 confidence_score=confidence_score,
                 status=ExtractionStatus.EXTRACTED,
-                metadata=metadata or {},
+                extra_metadata=extra_metadata or {},
             )
             session.add(extraction)
             session.commit()
@@ -457,6 +534,16 @@ class DatabaseRepository:
                     ReviewState.project_id == project_id,
                     ReviewState.status == ExtractionStatus.PENDING,
                 )
+            ).all()
+        finally:
+            session.close()
+
+    def list_reviews_by_project(self, project_id: str) -> List[ReviewState]:
+        """Get all reviews for project."""
+        session = self.get_session()
+        try:
+            return session.query(ReviewState).filter(
+                ReviewState.project_id == project_id
             ).all()
         finally:
             session.close()

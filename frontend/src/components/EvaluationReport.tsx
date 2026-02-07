@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { BarChart3, TrendingUp } from "lucide-react";
 import toast from "react-hot-toast";
-import { evaluationAPI } from "../services/api";
+import { evaluationAPI, taskAPI } from "../services/api";
 
 interface EvaluationReportProps {
   projectId: string;
@@ -10,6 +10,7 @@ interface EvaluationReportProps {
 const EvaluationReport: React.FC<EvaluationReportProps> = ({ projectId }) => {
   const [report, setReport] = useState<any>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [running, setRunning] = useState(false);
 
   useEffect(() => {
     loadReport();
@@ -24,6 +25,37 @@ const EvaluationReport: React.FC<EvaluationReportProps> = ({ projectId }) => {
       toast.error("Failed to load evaluation report");
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const runEvaluation = async () => {
+    setRunning(true);
+    try {
+      const resp = await evaluationAPI.evaluateProject(projectId, { items: [] });
+      const taskId = resp.task_id;
+      toast.success("Evaluation started");
+      // Poll task until completion
+      let attempts = 0;
+      const maxAttempts = 20;
+      const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
+      while (attempts < maxAttempts) {
+        const status = await taskAPI.getStatus(taskId);
+        if (status.status === "COMPLETED") {
+          toast.success("Evaluation completed");
+          await loadReport();
+          break;
+        }
+        if (status.status === "FAILED") {
+          toast.error("Evaluation failed");
+          break;
+        }
+        attempts += 1;
+        await delay(1000);
+      }
+    } catch (error) {
+      toast.error("Failed to start evaluation");
+    } finally {
+      setRunning(false);
     }
   };
 
@@ -178,12 +210,21 @@ const EvaluationReport: React.FC<EvaluationReportProps> = ({ projectId }) => {
         </div>
       )}
 
-      <button
-        onClick={loadReport}
-        className="bg-blue-600 text-white px-6 py-2 rounded-lg hover:bg-blue-700"
-      >
-        Refresh Report
-      </button>
+      <div className="flex gap-2">
+        <button
+          onClick={runEvaluation}
+          disabled={running}
+          className="bg-green-600 text-white px-6 py-2 rounded-lg hover:bg-green-700 disabled:bg-gray-400"
+        >
+          {running ? "Running Evaluation..." : "Run Evaluation"}
+        </button>
+        <button
+          onClick={loadReport}
+          className="bg-blue-600 text-white px-6 py-2 rounded-lg hover:bg-blue-700"
+        >
+          Refresh Report
+        </button>
+      </div>
     </div>
   );
 };

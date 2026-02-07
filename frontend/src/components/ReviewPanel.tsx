@@ -79,9 +79,15 @@ const ReviewPanel: React.FC<ReviewPanelProps> = ({ projectId }) => {
           >
             <div className="flex justify-between items-start mb-4">
               <div>
-                <h3 className="font-semibold text-gray-900">{review.status}</h3>
+                <h3 className="font-semibold text-gray-900">
+                  {review.field_name
+                    ? review.field_name
+                        .replace(/_/g, " ")
+                        .replace(/\b\w/g, (c: string) => c.toUpperCase())
+                    : "Unknown Field"}
+                </h3>
                 <p className="text-sm text-gray-600">
-                  Confidence: {(review.confidence_score * 100).toFixed(0)}%
+                  Status: <span className="font-medium">{review.status}</span> • Confidence: {(review.confidence_score * 100).toFixed(0)}%
                 </p>
               </div>
               <div className="flex gap-2">
