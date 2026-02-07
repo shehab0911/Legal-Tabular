@@ -10,7 +10,7 @@ services:
       POSTGRES_USER: reviewer
       POSTGRES_PASSWORD: dev_password
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
       - postgres_dev_data:/var/lib/postgresql/data
     healthcheck:
@@ -48,7 +48,7 @@ services:
       DEBUG_MODE: "true"
       PYTHONUNBUFFERED: 1
     ports:
-      - "8000:8000"
+      - "8001:8000"
     depends_on:
       postgres:
         condition: service_healthy
@@ -68,7 +68,7 @@ services:
       dockerfile: docker/Dockerfile.frontend.dev
     container_name: legal_review_dev_frontend
     environment:
-      VITE_API_URL: http://localhost:8000/api
+      VITE_API_URL: http://localhost:8001
     ports:
       - "5173:5173"
     volumes:

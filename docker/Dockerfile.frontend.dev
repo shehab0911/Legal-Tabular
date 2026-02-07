@@ -5,7 +5,7 @@ WORKDIR /app
 
 COPY frontend/package*.json ./
 
-RUN npm ci
+RUN npm install
 
 ENV VITE_API_URL=http://localhost:8000/api
 
@@ -13,4 +13,4 @@ COPY frontend/ .
 
 EXPOSE 5173
 
-CMD ["npm", "run", "dev", "--", "--host"]
+CMD ["node", "./node_modules/vite/bin/vite.js", "--host"]

@@ -16,7 +16,7 @@ services:
       - postgres_data:/var/lib/postgresql/data
       - ./init-db.sql:/docker-entrypoint-initdb.d/init.sql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-reviewer}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-reviewer} -d ${POSTGRES_DB:-legal_review}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -116,7 +116,7 @@ services:
     image: nginx:alpine
     container_name: legal_review_proxy
     ports:
-      - "80:80"
+      - "5173:80"
       - "443:443"
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
