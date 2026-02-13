@@ -2,8 +2,20 @@ import axios, { AxiosInstance } from "axios";
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || "/api";
 
+// For sandbox environments, detect if we need the direct backend URL
+const getBaseUrl = () => {
+  if (typeof window !== "undefined") {
+    const hostname = window.location.hostname;
+    // If accessed through sandbox proxy, use direct backend URL
+    if (hostname.includes("sandbox") && hostname.startsWith("5173")) {
+      return hostname.replace("5173", "8000").replace(/^/, "https://");
+    }
+  }
+  return API_BASE_URL;
+};
+
 const apiClient: AxiosInstance = axios.create({
-  baseURL: API_BASE_URL,
+  baseURL: getBaseUrl(),
   headers: {
     "Content-Type": "application/json",
   },
@@ -95,6 +107,25 @@ export const fieldTemplateAPI = {
     const response = await apiClient.get("/field-templates");
     return response.data;
   },
+
+  getTemplate: async (templateId: string) => {
+    const response = await apiClient.get(`/field-templates/${templateId}`);
+    return response.data;
+  },
+
+  updateTemplate: async (
+    templateId: string,
+    name: string,
+    description: string,
+    fields: any[],
+  ) => {
+    const response = await apiClient.put(`/field-templates/${templateId}`, {
+      name,
+      description,
+      fields,
+    });
+    return response.data;
+  },
 };
 
 // ==================== EXTRACTION APIS ====================
@@ -108,6 +139,15 @@ export const extractionAPI = {
   },
 };
 
+// ==================== EXTRACTION LIST API ====================
+
+export const extractionListAPI = {
+  listExtractions: async (projectId: string) => {
+    const response = await apiClient.get(`/projects/${projectId}/extractions`);
+    return response.data;
+  },
+};
+
 // ==================== REVIEW APIS ====================
 
 export const reviewAPI = {
@@ -116,6 +156,7 @@ export const reviewAPI = {
     status: string,
     manualValue?: string,
     notes?: string,
+    reviewedBy?: string,
   ) => {
     const response = await apiClient.put(
       `/extractions/${extractionId}/review`,
@@ -123,6 +164,7 @@ export const reviewAPI = {
         status,
         manual_value: manualValue,
         reviewer_notes: notes,
+        reviewed_by: reviewedBy,
       },
     );
     return response.data;
@@ -147,6 +189,76 @@ export const comparisonAPI = {
   exportCSV: async (projectId: string) => {
     const response = await apiClient.post(
       `/projects/${projectId}/table/export-csv`,
+    );
+    return response.data;
+  },
+
+  exportExcel: async (projectId: string) => {
+    const response = await apiClient.post(
+      `/projects/${projectId}/table/export-excel`,
+    );
+    return response.data;
+  },
+};
+
+// ==================== DIFF APIS ====================
+
+export const diffAPI = {
+  getDiff: async (projectId: string) => {
+    const response = await apiClient.get(`/projects/${projectId}/diff`);
+    return response.data;
+  },
+};
+
+// ==================== ANNOTATION APIS ====================
+
+export const annotationAPI = {
+  createAnnotation: async (
+    extractionId: string,
+    commentText: string,
+    annotatedBy: string = "anonymous",
+  ) => {
+    const response = await apiClient.post("/annotations", {
+      extraction_id: extractionId,
+      comment_text: commentText,
+      annotated_by: annotatedBy,
+    });
+    return response.data;
+  },
+
+  listExtractionAnnotations: async (extractionId: string) => {
+    const response = await apiClient.get(
+      `/extractions/${extractionId}/annotations`,
+    );
+    return response.data;
+  },
+
+  listProjectAnnotations: async (projectId: string) => {
+    const response = await apiClient.get(
+      `/projects/${projectId}/annotations`,
+    );
+    return response.data;
+  },
+
+  updateAnnotation: async (annotationId: string, commentText: string) => {
+    const response = await apiClient.put(`/annotations/${annotationId}`, {
+      comment_text: commentText,
+    });
+    return response.data;
+  },
+
+  deleteAnnotation: async (annotationId: string) => {
+    const response = await apiClient.delete(`/annotations/${annotationId}`);
+    return response.data;
+  },
+};
+
+// ==================== RE-EXTRACTION APIS ====================
+
+export const reExtractionAPI = {
+  reExtract: async (projectId: string) => {
+    const response = await apiClient.post(
+      `/projects/${projectId}/re-extract`,
     );
     return response.data;
   },

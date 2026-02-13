@@ -13,6 +13,7 @@ const ReviewPanel: React.FC<ReviewPanelProps> = ({ projectId }) => {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editValue, setEditValue] = useState("");
   const [editNotes, setEditNotes] = useState("");
+  const [reviewerName, setReviewerName] = useState("reviewer");
 
   useEffect(() => {
     loadReviews();
@@ -41,6 +42,7 @@ const ReviewPanel: React.FC<ReviewPanelProps> = ({ projectId }) => {
         status,
         manualValue,
         editNotes,
+        reviewerName,
       );
       toast.success(`Review updated: ${status}`);
       setEditingId(null);

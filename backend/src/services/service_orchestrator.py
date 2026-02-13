@@ -1,12 +1,15 @@
 """
 Business logic services for Legal Tabular Review.
-Orchestrates document ingestion, extraction, review, and evaluation.
+Orchestrates document ingestion, extraction, review, evaluation,
+diff highlighting, and annotation workflows.
 """
 
 import logging
 import uuid
 from typing import List, Optional, Dict, Any
-from datetime import datetime
+from datetime import datetime, timezone
+from collections import defaultdict
+from difflib import SequenceMatcher
 
 from src.storage.repository import DatabaseRepository
 from src.services.document_parser import DocumentParser, DocumentChunker
@@ -401,7 +404,7 @@ class ReviewService:
                 'manual_value': manual_value,
                 'reviewer_notes': reviewer_notes,
                 'reviewed_by': reviewed_by,
-                'reviewed_at': datetime.utcnow(),
+                'reviewed_at': datetime.now(timezone.utc),
             }
 
             review_state = self.repo.update_review_state(
@@ -462,7 +465,7 @@ class ComparisonService:
                     'document_count': len(documents),
                     'row_count': 0,
                     'rows': [],
-                    'generation_timestamp': datetime.utcnow().isoformat(),
+                    'generation_timestamp': datetime.now(timezone.utc).isoformat(),
                 }
 
             # Group extractions by field
@@ -522,7 +525,7 @@ class ComparisonService:
                     for d in documents
                 ],
                 'rows': rows,
-                'generation_timestamp': datetime.utcnow().isoformat(),
+                'generation_timestamp': datetime.now(timezone.utc).isoformat(),
             }
 
         except Exception as e:
@@ -682,7 +685,7 @@ class EvaluationService:
                 'field_results': list(field_results.values()),
                 'summary': f"Extracted {metrics['total_fields']} fields with "
                           f"{metrics['field_accuracy']:.1%} accuracy",
-                'generated_at': datetime.utcnow().isoformat(),
+                'generated_at': datetime.now(timezone.utc).isoformat(),
             }
 
         except Exception as e:
@@ -740,3 +743,190 @@ class TaskService:
 
         task = self.repo.update_task(task_id, **update_data)
         return self.get_task_status(task_id)
+
+
+class DiffService:
+    """Service for computing cross-document diff highlighting."""
+
+    def __init__(self, repo: DatabaseRepository):
+        self.repo = repo
+
+    def compute_diff(self, project_id: str) -> Dict[str, Any]:
+        """
+        Compute differences across documents for each field.
+
+        For each field, groups documents by their extracted value and
+        identifies outlier values (values that differ from the majority).
+        """
+        documents = self.repo.list_project_documents(project_id)
+        extractions = self.repo.list_extractions_by_project(project_id)
+
+        if not documents or not extractions:
+            return {
+                'project_id': project_id,
+                'field_diffs': [],
+                'summary': {'total_fields': 0, 'fields_with_differences': 0},
+            }
+
+        # Group extractions by field
+        field_map: Dict[str, List] = defaultdict(list)
+        for ext in extractions:
+            field_key = ext.field_name.replace('_', ' ').title()
+            field_map[field_key].append(ext)
+
+        doc_name_map = {d.id: d.filename for d in documents}
+        field_diffs = []
+        fields_with_diff = 0
+
+        for field_name, field_exts in field_map.items():
+            # Group by normalized or extracted value
+            value_groups: Dict[str, List[str]] = defaultdict(list)
+            doc_values = {}
+            for ext in field_exts:
+                val = (ext.normalized_value or ext.extracted_value or "N/A").strip()
+                doc_label = doc_name_map.get(ext.document_id, ext.document_id)
+                value_groups[val].append(doc_label)
+                doc_values[doc_label] = {
+                    'value': val,
+                    'confidence': ext.confidence_score,
+                    'document_id': ext.document_id,
+                }
+
+            # Determine majority value
+            majority_value = max(value_groups.keys(), key=lambda v: len(value_groups[v]))
+            majority_count = len(value_groups[majority_value])
+            total_docs = sum(len(docs) for docs in value_groups.values())
+            is_unanimous = len(value_groups) == 1
+
+            # Build outlier list
+            outliers = []
+            if not is_unanimous:
+                fields_with_diff += 1
+                for val, docs in value_groups.items():
+                    if val != majority_value:
+                        for doc_label in docs:
+                            outliers.append({
+                                'document': doc_label,
+                                'value': val,
+                                'document_id': doc_values[doc_label]['document_id'],
+                                'confidence': doc_values[doc_label]['confidence'],
+                            })
+
+            # Pairwise similarity matrix
+            all_values = list(doc_values.keys())
+            similarity_pairs = []
+            for i in range(len(all_values)):
+                for j in range(i + 1, len(all_values)):
+                    v1 = doc_values[all_values[i]]['value']
+                    v2 = doc_values[all_values[j]]['value']
+                    sim = SequenceMatcher(None, v1.lower(), v2.lower()).ratio()
+                    similarity_pairs.append({
+                        'doc_a': all_values[i],
+                        'doc_b': all_values[j],
+                        'similarity': round(sim, 3),
+                    })
+
+            field_diffs.append({
+                'field_name': field_name,
+                'is_unanimous': is_unanimous,
+                'majority_value': majority_value,
+                'majority_count': majority_count,
+                'total_documents': total_docs,
+                'unique_values': len(value_groups),
+                'value_groups': {v: docs for v, docs in value_groups.items()},
+                'outliers': outliers,
+                'document_values': doc_values,
+                'similarity_pairs': similarity_pairs,
+            })
+
+        return {
+            'project_id': project_id,
+            'field_diffs': field_diffs,
+            'summary': {
+                'total_fields': len(field_diffs),
+                'fields_with_differences': fields_with_diff,
+                'unanimity_rate': round(
+                    (len(field_diffs) - fields_with_diff) / max(1, len(field_diffs)), 3
+                ),
+            },
+        }
+
+
+class AnnotationService:
+    """Service for managing annotations on extracted fields."""
+
+    def __init__(self, repo: DatabaseRepository):
+        self.repo = repo
+
+    def create_annotation(
+        self,
+        extraction_id: str,
+        comment_text: str,
+        annotated_by: str,
+    ) -> Dict[str, Any]:
+        """Create a new annotation."""
+        annotation = self.repo.create_annotation(extraction_id, comment_text, annotated_by)
+        return self._to_dict(annotation)
+
+    def list_annotations_for_extraction(self, extraction_id: str) -> List[Dict[str, Any]]:
+        """List all annotations for a specific extraction."""
+        annotations = self.repo.list_annotations_for_extraction(extraction_id)
+        return [self._to_dict(a) for a in annotations]
+
+    def list_annotations_for_project(self, project_id: str) -> List[Dict[str, Any]]:
+        """List all annotations across a project."""
+        annotations = self.repo.list_annotations_by_project(project_id)
+        return [self._to_dict(a) for a in annotations]
+
+    def update_annotation(self, annotation_id: str, comment_text: str) -> Dict[str, Any]:
+        """Update an annotation."""
+        annotation = self.repo.update_annotation(annotation_id, comment_text)
+        if not annotation:
+            raise ValueError(f"Annotation not found: {annotation_id}")
+        return self._to_dict(annotation)
+
+    def delete_annotation(self, annotation_id: str) -> bool:
+        """Delete an annotation."""
+        return self.repo.delete_annotation(annotation_id)
+
+    @staticmethod
+    def _to_dict(annotation) -> Dict[str, Any]:
+        return {
+            'id': annotation.id,
+            'extraction_id': annotation.extraction_id,
+            'comment_text': annotation.comment_text,
+            'annotated_by': annotation.annotated_by,
+            'created_at': annotation.created_at.isoformat(),
+            'updated_at': annotation.updated_at.isoformat(),
+        }
+
+
+class ReExtractionService:
+    """Service for triggering re-extraction when templates change."""
+
+    def __init__(self, repo: DatabaseRepository):
+        self.repo = repo
+        self.extraction_service = ExtractionService(repo)
+
+    def re_extract_project(
+        self,
+        project_id: str,
+        field_definitions: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """
+        Delete existing extractions for a project and re-extract all documents
+        using the provided field definitions.
+        """
+        try:
+            # 1. Delete old extractions + reviews + citations + annotations
+            deleted_count = self.repo.delete_extractions_for_project(project_id)
+            logger.info(f"Deleted {deleted_count} old extractions for project {project_id}")
+
+            # 2. Re-extract all documents
+            result = self.extraction_service.extract_all_documents(project_id, field_definitions)
+            result['previous_extractions_deleted'] = deleted_count
+            return result
+
+        except Exception as e:
+            logger.error(f"Error in re-extraction for project {project_id}: {str(e)}")
+            raise

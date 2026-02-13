@@ -8,7 +8,7 @@ import logging
 import os
 import string
 from typing import Optional, List, Dict, Any, Tuple
-from datetime import datetime
+from datetime import datetime, timezone
 from difflib import SequenceMatcher
 import google.generativeai as genai
 
@@ -89,6 +89,8 @@ class FieldExtractor:
             field_type = str(raw_field_type).upper()
             description = field_def.get('description', '')
             display_name = field_def.get('display_name', '')
+            normalization_rules = field_def.get('normalization_rules') or {}
+            validation_rules = field_def.get('validation_rules') or {}
             
             extraction = self._extract_single_field(
                 document_text=document_text,
@@ -98,6 +100,8 @@ class FieldExtractor:
                 description=description,
                 display_name=display_name,
                 document_id=document_id,
+                normalization_rules=normalization_rules,
+                validation_rules=validation_rules,
             )
             
             results.append(extraction)
@@ -113,6 +117,8 @@ class FieldExtractor:
         description: str,
         display_name: str,
         document_id: str,
+        normalization_rules: Optional[Dict[str, Any]] = None,
+        validation_rules: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Extract a single field with citations and confidence."""
         
@@ -208,7 +214,7 @@ class FieldExtractor:
                 'citations': citations,
                 'extraction_metadata': {
                     'method': method,
-                    'extracted_at': datetime.utcnow().isoformat(),
+                    'extracted_at': datetime.now(timezone.utc).isoformat(),
                 }
             }
         except Exception as e:
