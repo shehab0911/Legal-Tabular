@@ -6,6 +6,8 @@ venv/
 .venv/
 .env
 backend/.env
+*.egg-info/
+*.egg
 
 # Node
 node_modules/
@@ -13,6 +15,28 @@ dist/
 build/
 .DS_Store
 
+# Database files
+*.db
+*.db-shm
+*.db-wal
+*.db-journal
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
 # Project specific
 backend/uploads/
 *.log
+frontend/dist/
+
+# Test artifacts
+.pytest_cache/
+.coverage
+htmlcov/

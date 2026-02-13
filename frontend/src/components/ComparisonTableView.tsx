@@ -1,8 +1,7 @@
 import React, { useState } from "react";
-import { Download, AlertCircle } from "lucide-react";
+import { Download, AlertCircle, FileSpreadsheet } from "lucide-react";
 import toast from "react-hot-toast";
 import { comparisonAPI } from "../services/api";
-import Papa from "papaparse";
 
 interface ComparisonTableViewProps {
   data: any;
@@ -18,18 +17,44 @@ const ComparisonTableView: React.FC<ComparisonTableViewProps> = ({
   const handleExportCSV = async () => {
     setExporting(true);
     try {
-      const csvData = comparisonAPI.exportCSV(projectId);
-      // Create download link
-      const csvContent = await csvData;
+      const csvContent = await comparisonAPI.exportCSV(projectId);
       const blob = new Blob([csvContent.content], { type: "text/csv" });
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
       a.download = csvContent.filename;
       a.click();
+      window.URL.revokeObjectURL(url);
       toast.success("Table exported to CSV");
     } catch (error) {
-      toast.error("Failed to export table");
+      toast.error("Failed to export CSV");
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const handleExportExcel = async () => {
+    setExporting(true);
+    try {
+      const excelData = await comparisonAPI.exportExcel(projectId);
+      // Decode base64 to binary
+      const binaryString = atob(excelData.content_base64);
+      const bytes = new Uint8Array(binaryString.length);
+      for (let i = 0; i < binaryString.length; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+      }
+      const blob = new Blob([bytes], {
+        type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      });
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = excelData.filename;
+      a.click();
+      window.URL.revokeObjectURL(url);
+      toast.success("Table exported to Excel");
+    } catch (error) {
+      toast.error("Failed to export Excel");
     } finally {
       setExporting(false);
     }
@@ -52,14 +77,24 @@ const ComparisonTableView: React.FC<ComparisonTableViewProps> = ({
         <h2 className="text-2xl font-semibold text-gray-900">
           Comparison Table
         </h2>
-        <button
-          onClick={handleExportCSV}
-          disabled={exporting}
-          className="flex items-center gap-2 bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 disabled:bg-gray-400"
-        >
-          <Download size={18} />
-          {exporting ? "Exporting..." : "Export to CSV"}
-        </button>
+        <div className="flex gap-2">
+          <button
+            onClick={handleExportCSV}
+            disabled={exporting}
+            className="flex items-center gap-2 bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 disabled:bg-gray-400 text-sm"
+          >
+            <Download size={18} />
+            {exporting ? "Exporting..." : "Export CSV"}
+          </button>
+          <button
+            onClick={handleExportExcel}
+            disabled={exporting}
+            className="flex items-center gap-2 bg-blue-700 text-white px-4 py-2 rounded-lg hover:bg-blue-800 disabled:bg-gray-400 text-sm"
+          >
+            <FileSpreadsheet size={18} />
+            {exporting ? "Exporting..." : "Export Excel"}
+          </button>
+        </div>
       </div>
 
       <div className="overflow-x-auto">

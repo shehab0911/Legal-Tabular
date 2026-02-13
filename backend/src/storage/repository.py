@@ -15,6 +15,7 @@ from src.models.schema import (
     Citation, ReviewState, Annotation, Task, EvaluationResult,
     ProjectStatus, DocumentStatus, ExtractionStatus, TaskStatus
 )
+from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -676,5 +677,117 @@ class DatabaseRepository:
                 'average_confidence': avg_confidence,
                 'coverage_percentage': (matched / total * 100) if total > 0 else 0.0,
             }
+        finally:
+            session.close()
+
+    # ==================== ANNOTATION OPERATIONS ====================
+
+    def create_annotation(
+        self,
+        extraction_id: str,
+        comment_text: str,
+        annotated_by: str,
+    ) -> Annotation:
+        """Create annotation on an extraction."""
+        session = self.get_session()
+        try:
+            annotation = Annotation(
+                extraction_id=extraction_id,
+                comment_text=comment_text,
+                annotated_by=annotated_by,
+            )
+            session.add(annotation)
+            session.commit()
+            session.refresh(annotation)
+            return annotation
+        finally:
+            session.close()
+
+    def list_annotations_for_extraction(self, extraction_id: str) -> List[Annotation]:
+        """List annotations for a specific extraction."""
+        session = self.get_session()
+        try:
+            return session.query(Annotation).filter(
+                Annotation.extraction_id == extraction_id
+            ).order_by(Annotation.created_at.desc()).all()
+        finally:
+            session.close()
+
+    def list_annotations_by_project(self, project_id: str) -> List[Annotation]:
+        """List all annotations for a project via extraction results."""
+        session = self.get_session()
+        try:
+            return session.query(Annotation).join(
+                ExtractionResult, Annotation.extraction_id == ExtractionResult.id
+            ).filter(
+                ExtractionResult.project_id == project_id
+            ).order_by(Annotation.created_at.desc()).all()
+        finally:
+            session.close()
+
+    def update_annotation(self, annotation_id: str, comment_text: str) -> Optional[Annotation]:
+        """Update an annotation comment."""
+        session = self.get_session()
+        try:
+            annotation = session.query(Annotation).filter(Annotation.id == annotation_id).first()
+            if annotation:
+                annotation.comment_text = comment_text
+                annotation.updated_at = datetime.now(timezone.utc)
+                session.commit()
+                session.refresh(annotation)
+            return annotation
+        finally:
+            session.close()
+
+    def delete_annotation(self, annotation_id: str) -> bool:
+        """Delete an annotation."""
+        session = self.get_session()
+        try:
+            annotation = session.query(Annotation).filter(Annotation.id == annotation_id).first()
+            if annotation:
+                session.delete(annotation)
+                session.commit()
+                return True
+            return False
+        finally:
+            session.close()
+
+    # ==================== BULK / RE-EXTRACTION OPERATIONS ====================
+
+    def delete_extractions_for_project(self, project_id: str) -> int:
+        """Delete all extractions, citations, review states for a project (for re-extraction)."""
+        session = self.get_session()
+        try:
+            # Delete in FK order: annotations -> citations -> review_states -> extractions
+            extraction_ids = [
+                e.id for e in session.query(ExtractionResult.id).filter(
+                    ExtractionResult.project_id == project_id
+                ).all()
+            ]
+            if not extraction_ids:
+                return 0
+
+            session.query(Annotation).filter(
+                Annotation.extraction_id.in_(extraction_ids)
+            ).delete(synchronize_session=False)
+
+            session.query(Citation).filter(
+                Citation.extraction_id.in_(extraction_ids)
+            ).delete(synchronize_session=False)
+
+            session.query(ReviewState).filter(
+                ReviewState.extraction_id.in_(extraction_ids)
+            ).delete(synchronize_session=False)
+
+            count = session.query(ExtractionResult).filter(
+                ExtractionResult.project_id == project_id
+            ).delete(synchronize_session=False)
+
+            session.commit()
+            return count
+        except Exception as e:
+            logger.error(f"Error deleting extractions for project {project_id}: {str(e)}")
+            session.rollback()
+            raise
         finally:
             session.close()

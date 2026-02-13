@@ -3,13 +3,13 @@ Database schema models for Legal Tabular Review System.
 Defines all data structures, relationships, and status enumerations.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional, List, Dict, Any
 from uuid import uuid4
 
 from sqlalchemy import Column, String, DateTime, Float, Integer, Boolean, Text, JSON, ForeignKey, Enum as SQLEnum, Table
-from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import declarative_base
 from sqlalchemy.orm import relationship
 from pydantic import BaseModel, Field
 
@@ -80,8 +80,8 @@ class Project(Base):
     description = Column(Text, nullable=True)
     field_template_id = Column(String(36), ForeignKey("field_templates.id"), nullable=True)
     status = Column(SQLEnum(ProjectStatus), default=ProjectStatus.CREATED, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc), nullable=False)
     extra_metadata = Column("metadata", JSON, default={}, nullable=False)
 
     # Relationships
@@ -106,8 +106,8 @@ class Document(Base):
     content_text = Column(Text, nullable=False)
     parsed_metadata = Column(JSON, default={}, nullable=False)
     status = Column(SQLEnum(DocumentStatus), default=DocumentStatus.UPLOADED, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc), nullable=False)
 
     # Relationships
     project = relationship("Project", back_populates="documents")
@@ -142,8 +142,8 @@ class FieldTemplate(Base):
     description = Column(Text, nullable=True)
     version = Column(Integer, default=1, nullable=False)
     fields = Column(JSON, nullable=False)  # List of FieldDefinition dicts
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc), nullable=False)
     is_active = Column(Boolean, default=True, nullable=False)
 
     # Relationships
@@ -164,8 +164,8 @@ class ExtractionResult(Base):
     normalized_value = Column(Text, nullable=True)
     confidence_score = Column(Float, default=0.0, nullable=False)
     status = Column(SQLEnum(ExtractionStatus), default=ExtractionStatus.PENDING, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc), nullable=False)
     extra_metadata = Column("metadata", JSON, default={}, nullable=False)
 
     # Relationships
@@ -187,7 +187,7 @@ class Citation(Base):
     page_number = Column(Integer, nullable=True)
     section_title = Column(String(512), nullable=True)
     relevance_score = Column(Float, default=0.0, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
 
     # Relationships
     extraction = relationship("ExtractionResult", back_populates="citations")
@@ -206,8 +206,8 @@ class ReviewState(Base):
     manual_value = Column(Text, nullable=True)
     reviewer_notes = Column(Text, nullable=True)
     confidence_score = Column(Float, default=0.0, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc), nullable=False)
     reviewed_at = Column(DateTime, nullable=True)
     reviewed_by = Column(String(256), nullable=True)
 
@@ -224,8 +224,8 @@ class Annotation(Base):
     extraction_id = Column(String(36), ForeignKey("extraction_results.id"), nullable=False)
     comment_text = Column(Text, nullable=False)
     annotated_by = Column(String(256), nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc), nullable=False)
 
 
 class Task(Base):
@@ -238,8 +238,8 @@ class Task(Base):
     status = Column(SQLEnum(TaskStatus), default=TaskStatus.QUEUED, nullable=False)
     result = Column(JSON, default={}, nullable=False)
     error_message = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc), nullable=False)
     started_at = Column(DateTime, nullable=True)
     completed_at = Column(DateTime, nullable=True)
 
@@ -260,7 +260,7 @@ class EvaluationResult(Base):
     match_score = Column(Float, default=0.0, nullable=False)
     normalized_match = Column(Boolean, default=False, nullable=False)
     notes = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
 
     # Relationships
     project = relationship("Project", back_populates="evaluations")
@@ -299,8 +299,7 @@ class FieldTemplateResponse(BaseModel):
     updated_at: datetime
     is_active: bool
 
-    class Config:
-        from_attributes = True
+    model_config = {"from_attributes": True}
 
 
 class DocumentMetadata(BaseModel):
@@ -320,8 +319,7 @@ class CitationDTO(BaseModel):
     section_title: Optional[str]
     relevance_score: float
 
-    class Config:
-        from_attributes = True
+    model_config = {"from_attributes": True}
 
 
 class ExtractionResultDTO(BaseModel):
@@ -338,8 +336,7 @@ class ExtractionResultDTO(BaseModel):
     created_at: datetime
     updated_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = {"from_attributes": True}
 
 
 class ReviewStateDTO(BaseModel):
@@ -354,8 +351,7 @@ class ReviewStateDTO(BaseModel):
     reviewed_at: Optional[datetime]
     reviewed_by: Optional[str]
 
-    class Config:
-        from_attributes = True
+    model_config = {"from_attributes": True}
 
 
 class ProjectCreateRequest(BaseModel):
@@ -383,8 +379,7 @@ class ProjectResponse(BaseModel):
     document_count: Optional[int] = 0
     extraction_count: Optional[int] = 0
 
-    class Config:
-        from_attributes = True
+    model_config = {"from_attributes": True}
 
 
 class DocumentUploadRequest(BaseModel):
@@ -404,8 +399,7 @@ class DocumentResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = {"from_attributes": True}
 
 
 class TableRow(BaseModel):
@@ -429,6 +423,31 @@ class ExtractionUpdateRequest(BaseModel):
     status: ExtractionStatus
     manual_value: Optional[str] = None
     reviewer_notes: Optional[str] = None
+    reviewed_by: Optional[str] = None
+
+
+class AnnotationCreateRequest(BaseModel):
+    """Request to create an annotation."""
+    extraction_id: str
+    comment_text: str
+    annotated_by: str = Field(default="anonymous", description="User creating the annotation")
+
+
+class AnnotationUpdateRequest(BaseModel):
+    """Request to update an annotation."""
+    comment_text: str
+
+
+class AnnotationResponse(BaseModel):
+    """Response for an annotation."""
+    id: str
+    extraction_id: str
+    comment_text: str
+    annotated_by: str
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
 
 
 class TaskStatusResponse(BaseModel):
@@ -443,8 +462,7 @@ class TaskStatusResponse(BaseModel):
     started_at: Optional[datetime]
     completed_at: Optional[datetime]
 
-    class Config:
-        from_attributes = True
+    model_config = {"from_attributes": True}
 
 
 class EvaluationMetrics(BaseModel):
