@@ -11,7 +11,7 @@ Enterprise-grade system for extracting, comparing, and reviewing key fields from
 - **Citation Tracking**: Source text references with relevance scoring and page numbers
 - **Confidence Scoring**: Per-field extraction confidence with color-coded visualization
 
-### Enterprise Features
+### Features
 - **Excel/XLSX Export**: Styled spreadsheets with confidence color-coding and auto-fit columns
 - **CSV Export**: Lightweight tabular export for analysis
 - **Diff Highlighting**: Cross-document difference detection with outlier identification and similarity matrices
@@ -142,6 +142,24 @@ The `data/` directory contains sample legal documents for testing:
 - Tesla SEC filings (HTML, PDF)
 - Supply agreements (PDF)
 - Contract exhibits (HTML)
+
+## Screenshots
+
+Below are screenshots captured from the running system as proof of the implemented features:
+
+![Project List](system%20picture/Project%20list_First%20One.png)
+
+![Document Upload & Extraction](system%20picture/Upload%20Documents%20and%20Extraction_2nd.png)
+
+![Comparison Table](system%20picture/Comparison%20Table_2nd.png)
+
+![Diff Highlighting](system%20picture/Diff_Highlighting_4th.png)
+
+![Review Section](system%20picture/Review%20Section_5th.png)
+
+![Annotations](system%20picture/Annotation_6th.png)
+
+![Evaluation](system%20picture/Evaluation_7th.png)
 
 ## License
 
